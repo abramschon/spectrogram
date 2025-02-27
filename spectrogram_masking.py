@@ -8,13 +8,13 @@ from typing import Tuple
 
 #%%
 def main():
-    #%%
-    secs=10
+    #%% Generate an example accelerometer signal
+    secs=3
     freq=20
-    t, x = generate_test_accelerometer(secs=secs, freq=freq)
+    t, x = generate_test_accelerometer(secs=secs, freq=freq, n_sines=3)
     x_tensor = torch.from_numpy(x)
 
-    #%% Plot the example
+    # Plot the example
     fig, ax = plt.subplots()
     ax.plot(t, x)
     ax.set_xlabel('Time (s)')
@@ -22,19 +22,128 @@ def main():
     ax.set_title('Example Accelerometer Signal')
     plt.show()
 
-    #%%
-    x_spec = time_to_spectrogram(
+    #%% Get the spectrogram
+    x_spec = time_to_spectrogram( # shape: T, C, F, P 
         x_tensor, 
         n_fft=freq, 
+        hop_length=freq//2,
+        phase=True,
+        stack_axes=False)
+    
+    x_mag = time_to_spectrogram( # shape: T, C, F, P=1
+        x_tensor, 
+        n_fft=freq, 
+        hop_length=freq//2,
+        phase=False,
+        stack_axes=False)
+
+    #%% Plot the real and imaginary parts
+    # Real part is the first entry of last dim
+    fig, axes = plt.subplots(3, 1)
+    for c in range(3):
+        axes[c].imshow(x_spec[:,c,:,0])
+        axes[c].set_xlabel('Frequency (Hz)')
+        axes[c].set_ylabel('Time')
+
+    plt.show()
+
+    # Plot the imaginary part
+    # Imaginary part is the second entry of last dim
+    fig, axes = plt.subplots(3, 1)
+    for c in range(3):
+        axes[c].imshow(x_spec[:,c,:,1])
+        axes[c].set_xlabel('Frequency (Hz)')
+        axes[c].set_ylabel('Time')
+
+    plt.show()
+
+    # Plot the magnitude
+    fig, axes = plt.subplots(3, 1)
+    for c in range(3):
+        axes[c].imshow(x_mag[:,c,:,0])
+        axes[c].set_xlabel('Frequency (Hz)')
+        axes[c].set_ylabel('Time')
+
+    #%% Check that the inverse works for the spectrogram with phase information
+    x_time = spectrogram_to_time(
+        x_spec, 
+        n_fft=freq, 
         hop_length=freq//2)
+    
+    # Plot the original and reconstructed signals
+    fig, axes = plt.subplots(2, 1)
+    axes[0].plot(t, x)
+    axes[0].set_title('Original Signal')
+    axes[1].plot(t, x_time)
+    axes[1].set_title('Reconstructed Signal')
+    plt.show()
 
-    #%%
+    # Check that the inverse works for the spectrogram without phase information
+    x_mag_time = spectrogram_to_time(
+        x_mag, 
+        n_fft=freq, 
+        hop_length=freq//2)
+    fig, ax = plt.subplots()
+    ax.plot(t, x_mag_time)
+    ax.set_title('Reconstructed Signal (Magnitude Only)')
+    plt.show()
 
 
+    #%% Mask the spectrogram
+    x_spec_mask_time, mask = randomly_mask_tensor(x_spec, p=0.5, width=1, axis=0, prob=0.9)
+    fig, axes = plt.subplots(3, 1)
+    for c in range(3):
+        axes[c].imshow(x_spec_mask_time[:,c,:,0])
+        axes[c].set_xlabel('Frequency (Hz)')
+        axes[c].set_ylabel('Time')  
+    plt.show()
+
+    x_masked_time = spectrogram_to_time(
+        x_spec_mask_time, 
+        n_fft=freq, 
+        hop_length=freq//2
+    )
+    
+    fig, axes = plt.subplots(2, 1)
+    axes[0].plot(t, x)
+    axes[0].set_title('Original Signal')
+    axes[1].plot(t, x_masked_time)
+    axes[1].set_title('Reconstructed masked Signal')
+    plt.show()
+
+
+    #%% Mask along frequency
+    x_spec_mask_freq, mask = randomly_mask_tensor(x_spec, p=0.5, width=1, axis=2, prob=0.9)
+    if len(mask) == mask.sum():
+        print("None of the values were masked")
+
+    fig, axes = plt.subplots(3, 1)
+    for c in range(3):
+        axes[c].imshow(x_spec_mask_freq[:,c,:,0])
+        axes[c].set_xlabel('Frequency (Hz)')
+        axes[c].set_ylabel('Time')  
+    plt.show()
+
+    x_masked_freq = spectrogram_to_time(
+        x_spec_mask_freq, 
+        n_fft=freq, 
+        hop_length=freq//2
+    )
+    
+    fig, axes = plt.subplots(2, 1)
+    axes[0].plot(t, x)
+    axes[0].set_title('Original Signal')
+    axes[1].plot(t, x_masked_freq)
+    axes[1].set_title('Reconstructed Masked Signal')
+    plt.show()
 
 
 #%% Functions
-def generate_test_accelerometer(secs: int=10, freq: int=30) -> Tuple[np.ndarray, np.ndarray]:
+def generate_test_accelerometer(secs: int=10, 
+                                freq: int=30, 
+                                n_sines: int=3,
+                                min_freq: int=0,
+                                max_freq: int=1) -> Tuple[np.ndarray, np.ndarray]:
     """Generate a test signal with multiple frequency components."""    
     n_points = int(secs * freq)
     t = np.linspace(0, secs, n_points)
@@ -42,8 +151,8 @@ def generate_test_accelerometer(secs: int=10, freq: int=30) -> Tuple[np.ndarray,
     # Create a signal with multiple frequency components
     rng = np.random.default_rng()
     for c in range(3): # 3 channels
-        for _ in range(10):
-            freq = rng.uniform(0, 10)
+        for _ in range(n_sines):
+            freq = rng.uniform(min_freq, max_freq)
             x[:, c] += np.sin(2 * np.pi * freq * t)
 
     return t, x
@@ -85,7 +194,6 @@ def time_to_spectrogram(x, n_fft, hop_length, window=None, phase=False, stack_ax
         hop_length=hop_length,
         win_length=n_fft,
         window=window,
-        center=False,
         return_complex=True
     )  # Shape: [num_channels, num_bins, num_frames]
     
@@ -105,6 +213,55 @@ def time_to_spectrogram(x, n_fft, hop_length, window=None, phase=False, stack_ax
         x = einops.rearrange(x, 'C F T P -> T C F P')
         
     return x
+
+def spectrogram_to_time(x, n_fft, hop_length, window=None):
+    """
+    Convert spectrograms back to time-domain signals using inverse STFT
+    
+    Parameters:
+    -----------
+    x : torch.Tensor
+        Input spectrogram tensor of shape [num_frames, num_channels, num_bins, 2]
+        where the last dimension contains real and imaginary parts
+    n_fft : int
+        FFT window size
+    hop_length : int
+        FFT window shift
+    window : torch.Tensor, optional
+        Window function (default: Hann window)
+        
+    Returns:
+    --------
+    torch.Tensor
+        Time-domain signal tensor of shape [sequence_length, num_channels]
+    """
+    if window is None:
+        window = torch.hann_window(n_fft)
+    
+    # Rearrange dimensions to match torch.istft requirements
+    # [num_frames, num_channels, num_bins, 2] -> [num_channels, num_bins, num_frames, 2]
+    x = einops.rearrange(x, 'T C F P -> C F T P')
+    
+    if x.shape[-1] == 1:
+        # If only magnitude is provided, assume phase is zero
+        x_complex = torch.complex(x[..., 0], torch.zeros_like(x[..., 0]))
+    else:
+        # Convert from real/imaginary to complex
+        x_real = x[..., 0]
+        x_imag = x[..., 1]
+        x_complex = torch.complex(x_real, x_imag)
+    x_time = torch.istft(
+        input=x_complex,
+        n_fft=n_fft,
+        hop_length=hop_length,
+        win_length=n_fft,
+        window=window,
+    )  # Shape: [num_channels, sequence_length]
+    
+    # Rearrange back to [sequence_length, num_channels]
+    x_time = einops.rearrange(x_time, 'C S -> S C')
+    
+    return x_time
 
 def complex_to_cartesian(x):
     """Convert complex tensor to cartesian (real and imaginary parts)"""
@@ -237,7 +394,6 @@ def mask_tensor(x, mask, axis=0):
         Masked tensor
     """
     shape = x.shape
-    rank = len(shape)
     new_shape = [length if i == axis else 1 for i, length in enumerate(shape)]
     mask = torch.reshape(mask, new_shape)
     return x * mask
